@@ -1,0 +1,50 @@
+name: serve
+on:
+  workflow_dispatch:
+    inputs:
+      u:
+        required: true
+      idle:
+        default: '10'
+permissions:
+  contents: read
+  id-token: write
+jobs:
+  serve:
+    runs-on: ubuntu-latest
+    timeout-minutes: 350
+    env:
+      U: ${{ inputs.u }}
+      IDLE: ${{ inputs.idle }}
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - name: start
+        run: |
+          J=$(curl -fsS -G -H "Authorization: Bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" --data-urlencode "audience=$U" "$ACTIONS_ID_TOKEN_REQUEST_URL" | python3 -c "import sys,json;print(json.load(sys.stdin)['value'])")
+          echo "::add-mask::$J"
+          printf '{"jwt":"%s"}' "$J" > body.json
+          curl -fsS -X POST -H 'content-type: application/json' --data @body.json "$U/api/boot" -o boot.json
+          rm -f body.json
+          python3 - <<'PY'
+          import json, os
+          b = json.load(open('boot.json'))
+          print('::add-mask::' + b['token'])
+          open('runner.py', 'w').write(b['runner'])
+          open('config.json', 'w').write(json.dumps(b['config']))
+          with open(os.environ['GITHUB_ENV'], 'a') as f:
+              f.write('WORKER_URL=' + os.environ['U'] + '\nRUN_TOKEN=' + b['token'] + '\n')
+          os.remove('boot.json')
+          PY
+      - id: c
+        uses: actions/cache/restore@v4
+        with:
+          path: ~/llm
+          key: llm-v4-qwen3
+      - if: steps.c.outputs.cache-hit != 'true'
+        run: python3 runner.py setup
+      - if: steps.c.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: ~/llm
+          key: llm-v4-qwen3
+      - run: python3 runner.py serve
